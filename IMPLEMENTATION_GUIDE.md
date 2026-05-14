@@ -17,16 +17,25 @@ Update these as we complete work. Don't rely on memory — flip the box the mome
 - [x] `config.json` with all 5 fields
 - [x] Import + construct smoke test passes (all four layers instantiate)
 
-### Phase 1 — Lower stack (in progress)
-- [ ] DiskSpaceManager: `create_file`, `read_page`, `write_page`, `allocate_page`, free-list on page 0
-- [ ] DiskSpaceManager: I/O counters increment on every op
-- [ ] DiskSpaceManager: `log_write` invoked on every write (no-op default acceptable)
-- [ ] DiskSpaceManager: persistence (reload state from existing `.dat` files on init)
-- [ ] BufferManager: LRU eviction
-- [ ] BufferManager: MRU eviction
-- [ ] BufferManager: dirty tracking + `flush()`
-- [ ] BufferManager: all 5 counters update correctly (requests, hits, misses, evictions, dirty_writebacks)
-- [ ] Unit tests for disk + buffer
+### Phase 1 — Lower stack (done)
+- [x] DiskSpaceManager: `create_file`, `read_page`, `write_page`, `allocate_page`, free-list head on page 0
+- [x] DiskSpaceManager: I/O counters increment on every op (header reads/writes included)
+- [x] DiskSpaceManager: `log_write` invoked on every write (no-op default)
+- [x] DiskSpaceManager: persistence — lazy header load means a fresh instance picks up an existing `.dat` correctly
+- [x] BufferManager: LRU eviction (`next(iter(_frames))`)
+- [x] BufferManager: MRU eviction (`next(reversed(_frames))`)
+- [x] BufferManager: dirty tracking via `mark_dirty` + `flush()` (writes back, keeps frames in pool)
+- [x] BufferManager: all 5 counters update correctly (requests, hits, misses, evictions, dirty_writebacks)
+- [x] L3 disk passthroughs on the buffer (`create_file`, `file_exists`, `get_page_count`) so L3 never touches DSM
+- [x] Unit tests for disk + buffer: 14 tests, all passing (`python3 tests/test_phase1.py`)
+
+**Design decisions locked in during Phase 1** (document in the report):
+- Page 0 of every `.dat`/`.idx` is a DSM-internal header (`page_count` u32 + `free_list_head` u32, rest zero-padded). The buffer never sees page 0; data starts at page 1.
+- `WriteResult.old_data` is `b""` — reading-before-writing would double I/O cost. Reserved for opt-in WAL through `log_write`.
+- `allocate_page` physically writes a zeroed page so subsequent reads always work. The buffer's `allocate_page` inserts the zeroed frame with `dirty=False` (matches disk).
+- The buffer counts `allocate_page` as `requests += 1, misses += 1`. Eviction may still happen during allocation.
+- `flush()` writes back dirty frames but does NOT remove them from the pool — pages may still be needed.
+- Header reads/writes count toward disk I/O (they are real disk ops). Headers are cached in memory after first load.
 
 ### Phase 2 — Upper stack
 - [ ] Slotted page encode/decode (`file_index_manager/page.py`)

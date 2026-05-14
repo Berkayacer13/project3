@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# Runtime artifacts produced next to archive.py
+output.txt
+stats_output.txt
+log.csv
+*.dat
+*.idx
+catalog.dat

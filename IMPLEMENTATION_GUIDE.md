@@ -2,6 +2,65 @@
 
 A working contract for the two of us. Read this fully before writing code, and re-read sections 2 and 11 (Hard Rules + Pitfalls) before every PR. The grading is reproducibility-driven: graders run `python3 archive.py config.json input.txt` with **only** the config changed between runs, and diff the output. A single missed rule (wrong file location, raw return value, mis-formatted stats line) can silently fail a whole batch of test cases.
 
+## Progress Tracker
+
+Update these as we complete work. Don't rely on memory — flip the box the moment a PR lands.
+
+### Phase 0 — Skeleton (done)
+- [x] Directory layout (`common/`, four module folders, `tests/`)
+- [x] Result objects in `common/results.py` (`PageResult`, `WriteResult`, `AllocResult`, `BufferResult`, `RecordResult`, `OpResult`)
+- [x] DiskSpaceManager stub with counters + `log_write` slot
+- [x] BufferManager stub with the 5 counters
+- [x] FileIndexManager stub with catalog dict + stats counters
+- [x] QueryProcessor stub with output/log/stats file paths resolved to base dir
+- [x] `archive.py` matching the spec's §3 pattern verbatim
+- [x] `config.json` with all 5 fields
+- [x] Import + construct smoke test passes (all four layers instantiate)
+
+### Phase 1 — Lower stack (in progress)
+- [ ] DiskSpaceManager: `create_file`, `read_page`, `write_page`, `allocate_page`, free-list on page 0
+- [ ] DiskSpaceManager: I/O counters increment on every op
+- [ ] DiskSpaceManager: `log_write` invoked on every write (no-op default acceptable)
+- [ ] DiskSpaceManager: persistence (reload state from existing `.dat` files on init)
+- [ ] BufferManager: LRU eviction
+- [ ] BufferManager: MRU eviction
+- [ ] BufferManager: dirty tracking + `flush()`
+- [ ] BufferManager: all 5 counters update correctly (requests, hits, misses, evictions, dirty_writebacks)
+- [ ] Unit tests for disk + buffer
+
+### Phase 2 — Upper stack
+- [ ] Slotted page encode/decode (`file_index_manager/page.py`)
+- [ ] System catalog with persistence (`catalog.dat`)
+- [ ] `create_type` (with field validation, duplicate detection)
+- [ ] `insert_record` (heap, with PK duplicate detection)
+- [ ] `delete_record` (heap)
+- [ ] `search_record` via heap scan
+- [ ] `range_search` via heap scan
+- [ ] Input line parser
+- [ ] QueryProcessor: dispatch + log.csv writes + output.txt writes
+- [ ] QueryProcessor: failure handling (no crash on duplicate/missing/wrong-type)
+
+### Phase 3 — Indexes & system commands
+- [ ] Hash index (static, persistent, stable string hashing)
+- [ ] B+-tree index (persistent, equality + range)
+- [ ] `hash_index.range_search` falls back to heap scan
+- [ ] `explain` command (plan + result + per-query stats)
+- [ ] `stats` command (writes `stats_output.txt` in exact spec format)
+- [ ] `stats reset` zeroes counters across all layers
+- [ ] Persistence smoke test (create + restart + search)
+
+### Phase 4 — Experiments & deliverables
+- [ ] `workload_generator.py` with 4 modes
+- [ ] Experiment 1: LRU vs. MRU (sequential + random)
+- [ ] Experiment 2: heap_scan vs. hash_index vs. bplus_tree
+- [ ] Experiment 3: buffer pool size sensitivity (4/8/16/32/64)
+- [ ] `report.pdf` with tables + sizing-decision justifications
+- [ ] `record.txt` with reproduction commands
+- [ ] `README.md`
+- [ ] `ai_usage.md`
+- [ ] Individual contribution PDFs
+- [ ] Video recorded
+
 ---
 
 ## 1. Architecture at a Glance

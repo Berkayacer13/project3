@@ -1,0 +1,10 @@
+create type house 6 1 name str origin str leader str military_strength int wealth int spice_production int
+create record house Atreides Caladan Duke 8000 5000 150
+create record house Harkonnen GiediPrime Baron 12000 3000 200
+create record house Corrino Kaitain Emperor 15000 10000 50
+search record house Atreides
+delete record house Corrino
+search record house Corrino
+range_search house wealth 4000 9000
+explain search record house Harkonnen
+stats

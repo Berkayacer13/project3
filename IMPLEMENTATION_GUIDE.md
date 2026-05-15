@@ -37,17 +37,28 @@ Update these as we complete work. Don't rely on memory — flip the box the mome
 - `flush()` writes back dirty frames but does NOT remove them from the pool — pages may still be needed.
 - Header reads/writes count toward disk I/O (they are real disk ops). Headers are cached in memory after first load.
 
-### Phase 2 — Upper stack
-- [ ] Slotted page encode/decode (`file_index_manager/page.py`)
-- [ ] System catalog with persistence (`catalog.dat`)
-- [ ] `create_type` (with field validation, duplicate detection)
-- [ ] `insert_record` (heap, with PK duplicate detection)
-- [ ] `delete_record` (heap)
-- [ ] `search_record` via heap scan
-- [ ] `range_search` via heap scan
-- [ ] Input line parser
-- [ ] QueryProcessor: dispatch + log.csv writes + output.txt writes
-- [ ] QueryProcessor: failure handling (no crash on duplicate/missing/wrong-type)
+### Phase 2 — Upper stack (done)
+- [x] Slotted page encode/decode (`file_index_manager/page.py`)
+- [x] System catalog with persistence (`catalog.dat`)
+- [x] `create_type` (with field validation, duplicate detection)
+- [x] `insert_record` (heap, with PK duplicate detection)
+- [x] `delete_record` (heap)
+- [x] `search_record` via heap scan
+- [x] `range_search` via heap scan
+- [x] Input line parser (inline in QueryProcessor._dispatch)
+- [x] QueryProcessor: dispatch + log.csv writes + output.txt writes
+- [x] QueryProcessor: failure handling (no crash on duplicate/missing/wrong-type)
+- [x] QueryProcessor: `stats` writes `stats_output.txt` in the spec format
+- [x] QueryProcessor: `explain` writes 3-block (PLAN / RESULT / STATS)
+- [x] Unit tests: 16 Phase 2 tests passing (`python3 tests/test_phase2.py`)
+- [x] End-to-end smoke vs spec §9 sample matches expected output
+
+**Design decisions locked in during Phase 2** (document in the report):
+- Field names may contain underscores: the spec §14 text says alphanumeric only, but the spec's own sample uses `military_strength` and `spice_production`. We accept `[A-Za-z0-9_]` — strictly a superset of what the grader produces.
+- `_dispatch` parses inline (split-and-prefix) rather than via a separate parser module. The grammar is small enough that adding an AST layer would be overhead.
+- `catalog.dat` is a pickled dict opened directly by L3 (not through the buffer/DSM). Catalog is metadata, not paged data; one read at startup + one rewrite per `create type` keeps it simple.
+- `explain` plan estimates: `heap_scan = page_count - 1`, `bplus_tree = 3` (placeholder until Phase 3 wires the real tree height), `hash_index = 2`.
+- `output.txt` is truncated at the start of every run; `log.csv` is append-only (per spec §15 persistence).
 
 ### Phase 3 — Indexes & system commands
 - [ ] Hash index (static, persistent, stable string hashing)

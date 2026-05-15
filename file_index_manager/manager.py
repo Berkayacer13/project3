@@ -3,8 +3,17 @@
 Understands records, types (relations), slotted pages, and indexes. Uses the
 BufferManager for ALL page access — never calls DiskSpaceManager directly.
 
-Phase 2: heap-scan only. Phase 3 adds hash and B+-tree indexes via the same
-public surface; nothing in this module's API will change.
+Three index strategies wired in via `index_strategy` from config:
+    heap_scan    — no auxiliary index; PK lookups scan every data page.
+    hash_index   — static hash on the PK; equality lookups O(1); range_search
+                   falls back to a heap scan (spec §7.2) but still updates the
+                   shared `records_scanned` counter on each row read.
+    bplus_tree   — equality and range; range over the PK uses in-leaf order,
+                   range on a non-PK int field still falls back to heap scan.
+
+Indexes are instantiated lazily on first use per type and cached on
+`self._index_cache`. Every index page access bumps `self.index_nodes_visited`
+through the `_bump_nodes` callback we hand it at construction.
 """
 
 from typing import Any, List, Tuple
@@ -12,7 +21,9 @@ from typing import Any, List, Tuple
 from buffer_manager import BufferManager
 from common import OpResult, RecordResult
 
+from .bplus_tree import BPlusTree
 from .catalog import Catalog, TypeMeta
+from .hash_index import HashIndex
 
 
 def _is_identifier(s: str) -> bool:
@@ -20,6 +31,8 @@ def _is_identifier(s: str) -> bool:
     `military_strength` and `spice_production` (underscores). We accept the
     superset [A-Za-z0-9_] to match the sample the grader runs."""
     return all(c.isalnum() or c == "_" for c in s)
+
+
 from .page import (
     HEADER_SIZE,
     clear_slot,
@@ -59,6 +72,9 @@ class FileIndexManager:
 
         # System catalog — auto-loaded from disk in its constructor.
         self.catalog = Catalog(self.base_dir)
+
+        # Lazy-loaded index objects, one per indexed type.
+        self._index_cache: dict = {}
 
     # ====================================================================
     # DDL
@@ -105,6 +121,9 @@ class FileIndexManager:
                 message=f"could not create file {file_id} (already on disk?)",
             )
 
+        index_file_id = (
+            f"{type_name}.idx" if self.index_strategy != "heap_scan" else ""
+        )
         meta = TypeMeta(
             name=type_name,
             fields=list(fields),
@@ -113,8 +132,13 @@ class FileIndexManager:
             field_offsets=field_offsets,
             file_id=file_id,
             index_strategy=self.index_strategy,
+            index_file_id=index_file_id,
         )
         self.catalog.add(meta)
+        # Build the index file (empty buckets / empty root) for indexed types.
+        idx = self._get_index(meta)
+        if idx is not None:
+            idx.create()
         return OpResult(success=True, message=f"type {type_name} created")
 
     # ====================================================================
@@ -138,8 +162,9 @@ class FileIndexManager:
 
         pk_value = typed[meta.pk_index]
 
-        # Duplicate PK check — heap scan (phase 3 replaces this with index probe).
-        if self._heap_find_by_pk(meta, pk_value) is not None:
+        # Duplicate PK check: O(1) on indexed types, falls back to heap scan
+        # for heap_scan-only types.
+        if self._lookup_pk(meta, pk_value) is not None:
             return OpResult(
                 success=False, message=f"duplicate primary key {pk_value!r}"
             )
@@ -178,6 +203,11 @@ class FileIndexManager:
         set_header(bres.data, page_id or target_pid, rec_count, bitmap)
         self.buffer.mark_dirty(meta.file_id, target_pid)
 
+        # Push the new entry into the index, if any.
+        idx = self._get_index(meta)
+        if idx is not None:
+            idx.insert(pk_value, target_pid, slot)
+
         return OpResult(success=True, pages_touched=1)
 
     def delete_record(self, type_name: str, pk_value: Any) -> OpResult:
@@ -189,7 +219,7 @@ class FileIndexManager:
         if coerced is None:
             return OpResult(success=False, message=f"invalid pk value {pk_value!r}")
 
-        hit = self._heap_find_by_pk(meta, coerced)
+        hit = self._lookup_pk(meta, coerced)
         if hit is None:
             return OpResult(
                 success=False, message=f"record with pk {pk_value!r} not found"
@@ -202,6 +232,11 @@ class FileIndexManager:
         rec_count -= 1
         set_header(bres.data, page_id, rec_count, bitmap)
         self.buffer.mark_dirty(meta.file_id, pid)
+
+        # Remove from the index, if any.
+        idx = self._get_index(meta)
+        if idx is not None:
+            idx.delete(coerced)
 
         return OpResult(success=True, pages_touched=1)
 
@@ -221,7 +256,7 @@ class FileIndexManager:
         requests_before = self.buffer.requests
         scanned_before = self.records_scanned
 
-        hit = self._heap_find_by_pk(meta, coerced)
+        hit = self._lookup_pk(meta, coerced)
         pages_accessed = self.buffer.requests - requests_before
         scanned_this_query = self.records_scanned - scanned_before
 
@@ -264,11 +299,25 @@ class FileIndexManager:
         requests_before = self.buffer.requests
         scanned_before = self.records_scanned
 
-        out = []
-        for _pid, _slot, values in self._heap_scan(meta):
-            v = values[fidx]
-            if low <= v <= high:
+        is_pk_field = (fidx == meta.pk_index)
+        idx = self._get_index(meta)
+
+        if idx is not None and is_pk_field and idx.supports_range():
+            # B+-tree range scan: jump straight to matching leaves.
+            out = []
+            for data_pid, slot in idx.range_search(low, high):
+                bres = self.buffer.get_page(meta.file_id, data_pid)
+                raw = read_slot(bres.data, slot, meta.record_size)
+                values = decode_record(raw, meta.fields)
+                self.records_scanned += 1
                 out.append(values)
+        else:
+            # heap_scan (always), or hash_index fallback (spec §7.2).
+            out = []
+            for _pid, _slot, values in self._heap_scan(meta):
+                if low <= values[fidx] <= high:
+                    out.append(values)
+
         pages_accessed = self.buffer.requests - requests_before
         scanned_this_query = self.records_scanned - scanned_before
 
@@ -303,6 +352,49 @@ class FileIndexManager:
             if values[meta.pk_index] == pk_value:
                 return pid, slot, values
         return None
+
+    def _get_index(self, meta: TypeMeta):
+        """Lazy-load (and cache) the index object for an indexed type.
+
+        Returns None for heap_scan types. Strategy is frozen at type creation
+        time (TypeMeta.index_strategy) — config swaps only affect new types.
+        """
+        if meta.index_strategy == "heap_scan":
+            return None
+        cached = self._index_cache.get(meta.name)
+        if cached is not None:
+            return cached
+
+        bump = lambda: self._bump_nodes_visited()
+        if meta.index_strategy == "hash_index":
+            idx = HashIndex(meta, self.buffer, self.page_size, on_visit=bump)
+        elif meta.index_strategy == "bplus_tree":
+            idx = BPlusTree(meta, self.buffer, self.page_size, on_visit=bump)
+        else:
+            return None
+        self._index_cache[meta.name] = idx
+        return idx
+
+    def _bump_nodes_visited(self):
+        self.index_nodes_visited += 1
+
+    def _lookup_pk(self, meta: TypeMeta, pk_value):
+        """Locate a record by PK via the active index, or heap scan otherwise.
+
+        Returns (page_id, slot, values) or None.
+        """
+        idx = self._get_index(meta)
+        if idx is None:
+            return self._heap_find_by_pk(meta, pk_value)
+
+        ptr = idx.lookup(pk_value)
+        if ptr is None:
+            return None
+        pid, slot = ptr
+        bres = self.buffer.get_page(meta.file_id, pid)
+        raw = read_slot(bres.data, slot, meta.record_size)
+        values = decode_record(raw, meta.fields)
+        return pid, slot, values
 
     @staticmethod
     def _coerce_values(values, fields):

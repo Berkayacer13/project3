@@ -223,7 +223,13 @@ class QueryProcessor:
             self._log(line, "failure")
             return
 
-        strategy = self.file_idx.index_strategy
+        # The type's stored strategy is authoritative — config swaps don't
+        # rebuild old indexes. Fall back to config's strategy for types we
+        # don't recognize (shouldn't happen for explain on a known type).
+        if self.file_idx.has_type(type_name):
+            strategy = self.file_idx.get_type(type_name).index_strategy
+        else:
+            strategy = self.file_idx.index_strategy
         if head == "range_search" and strategy == "hash_index":
             strategy = "heap_scan"  # spec §7.2 fallback
 
@@ -231,9 +237,17 @@ class QueryProcessor:
         if strategy == "heap_scan":
             est_io = max(0, page_count - 1)
         elif strategy == "bplus_tree":
-            est_io = 3
+            # height descent + one leaf read; for range, add a small constant
+            # for leaf-chain traversal. Cheap heuristic that's honest with
+            # the actual access pattern.
+            meta = self.file_idx.get_type(type_name)
+            idx = self.file_idx._get_index(meta)  # cached; created at create_type
+            try:
+                est_io = idx.height() + 1
+            except AttributeError:
+                est_io = 3
         elif strategy == "hash_index":
-            est_io = 2
+            est_io = 2  # one bucket page (+1 if overflow chain — heuristic)
         else:
             est_io = 0
 

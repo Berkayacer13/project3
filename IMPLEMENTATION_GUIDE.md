@@ -60,14 +60,24 @@ Update these as we complete work. Don't rely on memory — flip the box the mome
 - `explain` plan estimates: `heap_scan = page_count - 1`, `bplus_tree = 3` (placeholder until Phase 3 wires the real tree height), `hash_index = 2`.
 - `output.txt` is truncated at the start of every run; `log.csv` is append-only (per spec §15 persistence).
 
-### Phase 3 — Indexes & system commands
-- [ ] Hash index (static, persistent, stable string hashing)
-- [ ] B+-tree index (persistent, equality + range)
-- [ ] `hash_index.range_search` falls back to heap scan
-- [ ] `explain` command (plan + result + per-query stats)
-- [ ] `stats` command (writes `stats_output.txt` in exact spec format)
-- [ ] `stats reset` zeroes counters across all layers
-- [ ] Persistence smoke test (create + restart + search)
+### Phase 3 — Indexes & system commands (done)
+- [x] Hash index — static, 16 buckets, FNV-1a stable hashing (`file_index_manager/hash_index.py`)
+- [x] B+-tree index — persistent, equality + range, splits propagate up with new-root promotion (`file_index_manager/bplus_tree.py`)
+- [x] `hash_index.range_search` falls back to heap scan (spec §7.2)
+- [x] FileIndexManager wires indexes via `_get_index` (lazy + cached) and `_lookup_pk` (index probe with heap fallback)
+- [x] `explain` reports the type's stored strategy and uses real B+-tree height (`idx.height() + 1`)
+- [x] `stats` and `stats reset` already shipped in Phase 2; verified they exercise the new index counters
+- [x] Persistence smoke: 600-key shuffled load + tear-down + re-open in `test_phase3.py`
+- [x] Unit tests: 14 Phase 3 tests passing (`python3 tests/test_phase3.py`); 44/44 across all phases
+
+**Design decisions locked in during Phase 3** (document in the report):
+- **Index strategy is frozen at `create type`.** `TypeMeta.index_strategy` captures the engine's config at the moment of creation. Config swaps between runs only affect *new* types — existing types keep using whatever index was built for them. This is the implementation guide §15.7 default ("rebuild on access" was the alternative; we picked freeze-on-create for predictability and zero migration cost).
+- **Hash index parameters.** N = 16 primary buckets, fixed at code-level (`hash_index.NUM_BUCKETS`). Key bytes: 4 for int (signed little-endian), 32 for str (null-padded ASCII). Bucket page header is 8 bytes (`next_overflow_pid u32, entry_count u16, 2-byte pad`); entries are `key_bytes + data_pid u32 + slot u16`. Overflow pages chain via `next_overflow_pid`.
+- **Stable hashing matters.** Python's built-in `hash()` is salted across runs (would invalidate a persisted index on restart). We use **FNV-1a 32-bit** for string keys and `int(key) % N` for int keys.
+- **B+-tree node format.** Struct-encoded, one node per page. Header (16 bytes): `type u8, 3-byte pad, num_keys u32, parent_pid u32, next_pid u32` — `next_pid` doubles as leftmost-child pointer for internals and next-leaf pointer for leaves. Internal entries: `key + right_child_pid u32`. Leaf entries: `key + data_pid u32 + data_slot u16`. Splits at `(capacity - 1)` not `capacity` — the shift-on-insert loop needs one scratch slot at index `num_keys` before the split triggers.
+- **B+-tree delete is non-rebalancing.** Leaves can become under-full; subsequent inserts refill them. Spec doesn't require strict balance, and lookups stay correct. Saves ~200 lines of merge/redistribute logic.
+- **`hash_index` + `range_search` fallback updates the heap-scan counters** (`records_scanned`, `pages_accessed`), not `index_nodes_visited` — matches what the heap-scan path naturally produces and keeps the "Index: hash_index, 0 nodes visited" stats line truthful for range workloads.
+- **Index pages go through the buffer**, same as data pages (spec §4.3). Both `.idx` files have a DSM-internal header at page 0; data starts at page 1.
 
 ### Phase 4 — Experiments & deliverables
 - [ ] `workload_generator.py` with 4 modes

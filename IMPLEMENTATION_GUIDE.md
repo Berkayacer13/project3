@@ -80,14 +80,14 @@ Update these as we complete work. Don't rely on memory — flip the box the mome
 - **Index pages go through the buffer**, same as data pages (spec §4.3). Both `.idx` files have a DSM-internal header at page 0; data starts at page 1.
 
 ### Phase 4 — Experiments & deliverables
-- [ ] `workload_generator.py` with 4 modes
-- [ ] Experiment 1: LRU vs. MRU (sequential + random)
-- [ ] Experiment 2: heap_scan vs. hash_index vs. bplus_tree
-- [ ] Experiment 3: buffer pool size sensitivity (4/8/16/32/64)
-- [ ] `report.pdf` with tables + sizing-decision justifications
-- [ ] `record.txt` with reproduction commands
-- [ ] `README.md`
-- [ ] `ai_usage.md`
+- [x] `workload_generator.py` with 4 modes (sequential, random, range, mixed)
+- [x] Experiment 1: LRU vs. MRU — runner in `run_experiments.py`
+- [x] Experiment 2: heap_scan vs. hash_index vs. bplus_tree — runner in `run_experiments.py`
+- [x] Experiment 3: buffer pool size sensitivity (4/8/16/32/64) — runner in `run_experiments.py`
+- [ ] `report.pdf` — draft in `report.md`, fill experiment tables then convert to PDF
+- [x] `record.txt` with reproduction commands
+- [x] `README.md`
+- [x] `ai_usage.md`
 - [ ] Individual contribution PDFs
 - [ ] Video recorded
 

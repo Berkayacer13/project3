@@ -1,0 +1,66 @@
+\documentclass[12pt]{article}
+
+\usepackage[a4paper, margin=2.5cm]{geometry}
+\usepackage{mathptmx}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+
+\setstretch{1.5}
+\setlength{\parskip}{4pt}
+
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\titleformat{\section}{\normalfont\bfseries\normalsize}{}{0pt}{}
+
+\hypersetup{colorlinks=false, hidelinks}
+
+\begin{document}
+
+\begin{center}
+    {\large\bfseries Individual Contribution Report}\\[4pt]
+    CMPE 321 — Project 3: Modular DBMS Engine \quad|\quad Boğaziçi University, Spring 2026
+\end{center}
+\hrule\vspace{4pt}
+\noindent\textbf{Name:} Berkay Acer \hfill \textbf{Student ID:} 2022400066 \hfill \textbf{Group:} 28
+\vspace{4pt}\hrule
+
+\section{Tasks \& Contributions}
+
+I was responsible for Phases 0 through 3, covering the full lower-to-middle engine stack.
+
+\begin{itemize}[leftmargin=*, itemsep=1pt, topsep=2pt]
+    \item \textbf{Phase 0 — Skeleton.} Designed the directory layout, wrote all six Result dataclasses in \texttt{common/results.py}, and created module stubs with a passing import smoke test.
+
+    \item \textbf{Phase 1 — Lower Stack.} Implemented \texttt{DiskSpaceManager} (binary page I/O, free-list header on page 0, I/O counters, \texttt{log\_write} slot) and \texttt{BufferManager} (LRU/MRU via \texttt{OrderedDict}, dirty tracking, all five counters). Wrote 14 unit tests.
+
+    \item \textbf{Phase 2 — Upper Stack.} Built the slotted-page encoder/decoder, pickled system catalog, all heap DML operations (\texttt{create\_type}, \texttt{insert\_record}, \texttt{delete\_record}, \texttt{search\_record}, \texttt{range\_search}), and the full \texttt{QueryProcessor} (dispatcher, \texttt{output.txt}, \texttt{log.csv}, \texttt{stats\_output.txt}, \texttt{explain}). Added 16 unit tests.
+
+    \item \textbf{Phase 3 — Index Layer.} Implemented the FNV-1a static hash index with overflow chaining and heap-scan fallback for range queries, and the persistent B+-tree with struct-encoded nodes, split propagation, and new-root promotion. Wired both into \texttt{FileIndexManager} with lazy caching. Added 14 unit tests; total suite reached 44/44.
+
+    \item \textbf{Video.} Co-recorded the project demonstration video covering architecture and live demo.
+\end{itemize}
+
+\section{Collaboration \& Challenges}
+
+Enes handled Phase 4 while I owned Phases 0–3. We coordinated through \texttt{IMPLEMENTATION\_GUIDE.md}, updating it after every design decision. The main challenge was index persistence: Python's built-in \texttt{hash()} is salted per run, silently corrupting the hash index on reload. Switching to FNV-1a fixed this. B+-tree split off-by-one errors were isolated with a fanout-3 unit test.
+
+\section{Self-Assessment}
+
+This project deepened my understanding of how each abstraction layer isolates complexity. I became comfortable with \texttt{struct} pack/unpack and persistence-safe data structures. I would improve by documenting design decisions before coding rather than after.
+
+\section{Use of AI Tools}
+
+I used an AI assistant occasionally when I got stuck on a concept and needed a
+quick explanation. For example, I asked it to clarify how B$^+$-tree node
+splitting propagates upward, and to explain the difference between LRU and MRU
+eviction in the context of sequential workloads. I also used it to look up the
+correct \texttt{struct} format strings for little-endian packing, which I could
+have found in the documentation but it was faster. I did not use it to write any
+part of the implementation; everything in the code is something I wrote and
+understand myself.
+
+\end{document}

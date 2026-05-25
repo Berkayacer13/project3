@@ -266,7 +266,17 @@ def experiment3(n_records: int, n_queries: int, seed: int) -> str:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Run CMPE 321 Project 3 experiments")
+    parser = argparse.ArgumentParser(
+        description="Run CMPE 321 Project 3 experiments",
+        epilog="Examples:\n"
+               "  python3 run_experiments.py            # run all three\n"
+               "  python3 run_experiments.py --exp 1    # LRU vs MRU only\n"
+               "  python3 run_experiments.py --exp 2    # index strategies only\n"
+               "  python3 run_experiments.py --exp 3    # buffer pool size only\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--exp", type=int, choices=[1, 2, 3], default=None,
+                        help="Which experiment to run (1, 2, or 3). Omit to run all.")
     parser.add_argument("--records", type=int, default=1000,
                         help="Records to insert per run (default: 1000)")
     parser.add_argument("--queries", type=int, default=200,
@@ -277,22 +287,26 @@ def main():
 
     print(f"Experiment parameters: {args.records} records, {args.queries} queries, seed={args.seed}")
 
-    tables = []
-    tables.append(experiment1(args.records, args.queries, args.seed))
-    tables.append(experiment2(args.records, args.queries, args.seed))
-    tables.append(experiment3(args.records, args.queries, args.seed))
+    runners = {
+        1: experiment1,
+        2: experiment2,
+        3: experiment3,
+    }
+
+    to_run = [args.exp] if args.exp else [1, 2, 3]
+    tables = [runners[n](args.records, args.queries, args.seed) for n in to_run]
 
     output = "\n".join(tables) + "\n"
     print(output)
 
     results_path = os.path.join(HERE, "experiment_results.txt")
-    with open(results_path, "w") as f:
+    mode = "a" if args.exp else "w"
+    with open(results_path, mode) as f:
         f.write(f"Experiment parameters: {args.records} records, "
                 f"{args.queries} queries, seed={args.seed}\n")
         f.write(output)
     print(f"\nResults also saved to: {results_path}")
 
-    # Restore the original data directory to a clean state
     _clear_data()
 
 

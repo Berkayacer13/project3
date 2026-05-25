@@ -1,0 +1,128 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper, top=1.6cm, bottom=1.6cm, left=2cm, right=2cm]{geometry}
+\usepackage{mathptmx}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+
+\setlength{\parskip}{2pt}
+\setlength{\parindent}{0pt}
+\titlespacing*{\section}{0pt}{5pt}{1pt}
+\titleformat{\section}{\normalfont\bfseries\normalsize}{}{0pt}{}
+
+\hypersetup{colorlinks=true, urlcolor=blue, linkcolor=black}
+
+\begin{document}
+
+\begin{center}
+    {\large\bfseries CMPE 321 — Project 3: Modular DBMS Engine}\\[3pt]
+    {\small Group 28 \quad|\quad
+     \"{O}kke\"{s} Berkay Acer (2022400066) \quad|\quad Enes \"{O}zt\"{u}rk (2022400042) \quad|\quad
+     Bo\u{g}azi\c{c}i University, Spring 2026}
+\end{center}
+\vspace{-2pt}\hrule\vspace{4pt}
+
+\section{Implementation}
+
+We built a four-layer Python DBMS engine: \textbf{Disk Space Manager} (binary
+fixed-size page I/O, read/write counters), \textbf{Buffer Manager} (in-memory
+page cache with LRU/MRU eviction, hit/miss tracking), \textbf{File \& Index
+Manager} (slotted pages, persistent catalog, three interchangeable index
+strategies), and \textbf{Query Processor} (command parser, \texttt{output.txt}
+writer, \texttt{log.csv}, \texttt{explain}/\texttt{stats} commands). The
+single entry point \texttt{archive.py} drives the engine; all parameters live
+in \texttt{config.json}. The project ships with 44 passing unit tests and a
+workload generator used in experiments.
+
+\section{Design Choices \& Justification}
+
+\textbf{Typed Result objects across layers.}\ \ No raw bytes or integers cross
+a layer boundary — every call returns a structured Result. This made the 44-test
+suite tractable: each layer can be unit-tested in isolation without mocking
+the layers below it.
+
+\textbf{B$^+$-tree as the default index.}\ \ We chose B$^+$-tree over pure hash
+because it supports both point lookups and range queries with only marginal I/O
+overhead (Exp.\ 2: 10\,375 reads vs.\ 10\,177 for hash). The hash index uses
+FNV-1a with overflow chaining; it is faster on pure point workloads but cannot
+serve range scans.
+
+\textbf{LRU as the default replacement policy.}\ \ Experiment 1 shows LRU
+dominates MRU on both sequential (97.4\% vs.\ 5.0\% hit rate) and random
+workloads (76.1\% vs.\ 13.8\%). MRU evicts the most-recently-used page
+immediately, which performs well only on one-time full scans — a rare case here.
+
+\textbf{Slotted pages.}\ \ Slotted-page layout allows variable-length records
+and in-page compaction without moving record IDs, making the record layer
+independent of physical page layout.
+
+\section{Experiment Results}
+
+\textbf{Exp.\,1 — LRU vs.\ MRU} (pool\,=\,16, B$^+$-tree, 1\,000 records / 200 queries):
+
+\vspace{2pt}
+{\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Workload + Policy & Disk Reads & Disk Writes & Hit Rate & Evictions \\
+\midrule
+Sequential + LRU  & 21  & 2 & 97.4\% & 21  \\
+Sequential + MRU  & 570 & 0 &  5.0\% & 570 \\
+Random + LRU      & 191 & 2 & 76.1\% & 191 \\
+Random + MRU      & 414 & 0 & 13.8\% & 414 \\
+\bottomrule
+\end{tabular}}
+
+\vspace{4pt}
+\textbf{Exp.\,2 — Index Strategies} (pool\,=\,16, LRU, mixed workload):
+
+\vspace{2pt}
+{\small
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Strategy   & Disk Reads & Disk Writes & Nodes & Recs Scanned & Returned \\
+\midrule
+heap\_scan  & 14\,901 & 1 & —   & 149\,375 & 10\,469 \\
+hash\_index & 10\,177 & 2 & 100 & 100\,000 & 10\,469 \\
+bplus\_tree & 10\,375 & 2 & 300 & 100\,000 & 10\,469 \\
+\bottomrule
+\end{tabular}}
+
+Heap scan reads 46\% more pages than the indexed strategies due to full-table
+traversal. Hash and B$^+$-tree achieve identical record throughput with
+comparable I/O; B$^+$-tree visits more nodes (300 vs.\ 100) but remains
+competitive because tree nodes fit in buffer pages.
+
+\vspace{4pt}
+\textbf{Exp.\,3 — Buffer Pool Size} (LRU, B$^+$-tree, random workload):
+
+\vspace{2pt}
+{\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Pool Size & Disk Reads & Hit Rate & Evictions \\
+\midrule
+ 4 & 349 & 56.4\% & 349 \\
+ 8 & 282 & 64.8\% & 282 \\
+16 & 191 & 76.1\% & 191 \\
+32 & 148 & 81.5\% & 148 \\
+64 &  85 & 89.4\% &  85 \\
+\bottomrule
+\end{tabular}}
+
+Hit rate improves monotonically but with diminishing returns above pool\,=\,32;
+doubling from 32 to 64 saves only 63 reads while doubling from 4 to 8 saves 67.
+
+\vspace{4pt}
+\begin{tabular}{@{}ll}
+  \textbf{GitHub:} & \href{[https://github.com/Berkayacer13/project3]}{[https://github.com/Berkayacer13/project3]} \\[2pt]
+  \textbf{Explanation Video:} & \href{[https://drive.google.com/file/d/1DJiPlc873piRfJiP-AoEraoxkArKnRQH/view?usp=sharing]}{https://drive.google.com/file/video} \\[2pt]
+\end{tabular}
+
+\end{document}

@@ -1,0 +1,63 @@
+\documentclass[12pt]{article}
+
+\usepackage[a4paper, margin=2.5cm]{geometry}
+\usepackage{mathptmx}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+
+\setstretch{1.5}
+\setlength{\parskip}{4pt}
+
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\titleformat{\section}{\normalfont\bfseries\normalsize}{}{0pt}{}
+
+\hypersetup{colorlinks=false, hidelinks}
+
+\begin{document}
+
+\begin{center}
+    {\large\bfseries Individual Contribution Report}\\[4pt]
+    CMPE 321 — Project 3: Modular DBMS Engine \quad|\quad Boğaziçi University, Spring 2026
+\end{center}
+\hrule\vspace{4pt}
+\noindent\textbf{Name:} Enes \"{O}zt\"{u}rk \hfill \textbf{Student ID:} 2022400042 \hfill \textbf{Group:} 28
+\vspace{4pt}\hrule
+
+\section{Tasks \& Contributions}
+
+I was responsible for Phase 4 (experimental evaluation and deliverables) and the shared document structure used across the project.
+
+\begin{itemize}[leftmargin=*, itemsep=1pt, topsep=2pt]
+    \item \textbf{Phase 4 — Workload Generator.} Implemented \texttt{workload\_generator.py} with four modes (\texttt{sequential}, \texttt{random}, \texttt{range}, \texttt{mixed}), a fixed \texttt{random.seed(42)} for reproducibility, and a \texttt{create type} header followed by $N$ insert and $Q$ query lines.
+
+    \item \textbf{Phase 4 — Experiments.} Implemented \texttt{run\_experiments.py} running three experiments: (1) LRU vs.\ MRU hit rate and I/O under sequential and random workloads; (2) \texttt{heap\_scan} vs.\ \texttt{hash\_index} vs.\ \texttt{bplus\_tree} query cost; (3) buffer pool size sensitivity (4, 8, 16, 32, 64 frames). Collected results and wrote the analysis tables in \texttt{report.md}.
+
+    \item \textbf{Deliverables.} Authored \texttt{README.md}, \texttt{record.txt} (exact reproduction commands), and the \LaTeX{} individual contribution format used by both teammates.
+
+    \item \textbf{Video.} Co-recorded the project demonstration video covering experiment methodology and live reproduction.
+\end{itemize}
+
+\section{Collaboration \& Challenges}
+
+Berkay owned Phases 0–3 while I owned Phase 4. We coordinated through \texttt{IMPLEMENTATION\_GUIDE.md}, which either of us updated immediately after any design decision. The main challenge was that buffer counters accumulate across a session, so experiment scripts needed a \texttt{stats reset} between runs to isolate per-workload numbers. Understanding this required reading Berkay's counter-reset implementation, which highlighted the value of our shared working contract.
+
+\section{Self-Assessment}
+
+Phase 4 required experimental design thinking (controlling variables, avoiding confounds) rather than low-level data structures, which was a valuable shift in perspective. I became more comfortable writing reproducible benchmark harnesses. I would start experiments earlier in future projects to allow time to iterate on workload parameters.
+
+\section{Use of AI Tools}
+
+During the project I used an AI tool mainly to read up on things I was
+unfamiliar with. Before designing the experiments I asked it to explain what
+sequential flooding means in the context of buffer replacement, which helped me
+set up the LRU vs.\ MRU comparison more meaningfully. I also used it a couple
+of times to understand how \texttt{argparse} works and to get the \LaTeX{}
+table syntax right for the report. The experiment scripts and all written
+content are my own work.
+
+\end{document}

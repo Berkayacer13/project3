@@ -1,0 +1,25 @@
+Experiment parameters: 1000 records, 200 queries, seed=42
+
+=== Experiment 1: LRU vs MRU (buffer_pool_size=16, index=bplus_tree) ===
+Workload + Policy  Disk Reads  Disk Writes  Hit Rate  Evictions
+-----------------  ----------  -----------  --------  ---------
+Sequential + LRU   21          2            97.4%     21       
+Sequential + MRU   570         0            5.0%      570      
+Random     + LRU   191         2            76.1%     191      
+Random     + MRU   414         0            13.8%     414      
+
+=== Experiment 2: Index Strategies (buffer_pool_size=16, policy=LRU, mode=mixed) ===
+Strategy    Disk Reads  Disk Writes  Nodes Visited  Recs Scanned  Recs Returned
+----------  ----------  -----------  -------------  ------------  -------------
+heap_scan   14901       1            0              149375        10469        
+hash_index  10177       2            100            100000        10469        
+bplus_tree  10375       2            300            100000        10469        
+
+=== Experiment 3: Buffer Pool Size (policy=LRU, index=bplus_tree, mode=random) ===
+Pool Size  Disk Reads  Disk Writes  Hit Rate  Evictions  Dirty WBs
+---------  ----------  -----------  --------  ---------  ---------
+4          349         2            56.4%     349        2        
+8          282         2            64.8%     282        2        
+16         191         2            76.1%     191        2        
+32         148         1            81.5%     148        1        
+64         85          0            89.4%     85         0        

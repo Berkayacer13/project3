@@ -19,6 +19,7 @@ through the `_bump_nodes` callback we hand it at construction.
 from typing import Any, List, Tuple
 
 from buffer_manager import BufferManager
+from buffer_manager.manager import PAGE_LSN_SIZE
 from common import OpResult, RecordResult
 
 from .bplus_tree import BPlusTree
@@ -36,14 +37,10 @@ def _is_identifier(s: str) -> bool:
 from .page import (
     HEADER_SIZE,
     clear_slot,
-    clear_slot_bytes,
     first_free_slot,
-    get_header,
     init_page,
     is_slot_occupied,
     read_slot,
-    set_header,
-    set_slot,
     write_slot,
 )
 from .record import (
@@ -61,6 +58,10 @@ class FileIndexManager:
         self.buffer = buffer
 
         self.page_size: int = config["page_size"]
+        # The BufferManager reserves the first PAGE_LSN_SIZE bytes of every page
+        # for the pageLSN and hands us a window starting after it, so all record
+        # and index layout math must use the reduced, usable size.
+        self.usable_page_size: int = self.page_size - PAGE_LSN_SIZE
         self.max_records_per_page: int = config["max_records_per_page"]
         self.index_strategy: str = config["index_strategy"]
         self.base_dir: str = config["_base_dir"]
@@ -90,8 +91,8 @@ class FileIndexManager:
             return OpResult(success=False, message="type name must be a valid identifier")
         if self.catalog.has(type_name):
             return OpResult(success=False, message=f"type {type_name} already exists")
-        if len(fields) < 6:
-            return OpResult(success=False, message="a type must have at least 6 fields")
+        if len(fields) < 1:
+            return OpResult(success=False, message="a type must have at least 1 field")
         for fname, ftype in fields:
             if not fname or not _is_identifier(fname):
                 return OpResult(
@@ -107,8 +108,9 @@ class FileIndexManager:
             )
 
         record_size, field_offsets = compute_record_layout(fields)
-        # Sanity: every page must hold at least one record after its header.
-        if HEADER_SIZE + record_size > self.page_size:
+        # Sanity: all max_records_per_page slots (each a 1-byte flag + record)
+        # must fit after the header, within the usable (post-pageLSN) page area.
+        if HEADER_SIZE + self.max_records_per_page * (1 + record_size) > self.usable_page_size:
             return OpResult(
                 success=False,
                 message=f"record_size {record_size} too large for page_size {self.page_size}",
@@ -177,10 +179,12 @@ class FileIndexManager:
         # Find a data page with a free slot, otherwise allocate a new one.
         page_count = self.buffer.get_page_count(meta.file_id)
         target_pid = None
+        slot = -1
+        bres = None
         for pid in range(1, page_count):
             bres = self.buffer.get_page(meta.file_id, pid)
-            _, rec_count, _ = get_header(bres.data)
-            if rec_count < self.max_records_per_page:
+            slot = first_free_slot(bres.data, self.max_records_per_page, meta.record_size)
+            if slot != -1:
                 target_pid = pid
                 break
 
@@ -192,15 +196,9 @@ class FileIndexManager:
             init_page(alloc.data, target_pid)
             self.buffer.mark_dirty(meta.file_id, target_pid)
             bres = alloc
-        else:
-            bres = self.buffer.get_page(meta.file_id, target_pid)
+            slot = 0
 
-        page_id, rec_count, bitmap = get_header(bres.data)
-        slot = first_free_slot(bitmap, self.max_records_per_page)
         write_slot(bres.data, slot, meta.record_size, record_bytes)
-        bitmap = set_slot(bitmap, slot)
-        rec_count += 1
-        set_header(bres.data, page_id or target_pid, rec_count, bitmap)
         self.buffer.mark_dirty(meta.file_id, target_pid)
 
         # Push the new entry into the index, if any.
@@ -226,11 +224,7 @@ class FileIndexManager:
             )
         pid, slot, _ = hit
         bres = self.buffer.get_page(meta.file_id, pid)
-        page_id, rec_count, bitmap = get_header(bres.data)
-        bitmap = clear_slot(bitmap, slot)
-        clear_slot_bytes(bres.data, slot, meta.record_size)
-        rec_count -= 1
-        set_header(bres.data, page_id, rec_count, bitmap)
+        clear_slot(bres.data, slot, meta.record_size)
         self.buffer.mark_dirty(meta.file_id, pid)
 
         # Remove from the index, if any.
@@ -318,6 +312,10 @@ class FileIndexManager:
                 if low <= values[fidx] <= high:
                     out.append(values)
 
+        # Spec §9: non-decreasing order of the searched field, ties broken by
+        # primary key ascending — regardless of the active index strategy.
+        out.sort(key=lambda v: (v[fidx], v[meta.pk_index]))
+
         pages_accessed = self.buffer.requests - requests_before
         scanned_this_query = self.records_scanned - scanned_before
 
@@ -338,9 +336,8 @@ class FileIndexManager:
         page_count = self.buffer.get_page_count(meta.file_id)
         for pid in range(1, page_count):
             bres = self.buffer.get_page(meta.file_id, pid)
-            _, _, bitmap = get_header(bres.data)
             for slot in range(self.max_records_per_page):
-                if not is_slot_occupied(bitmap, slot):
+                if not is_slot_occupied(bres.data, slot, meta.record_size):
                     continue
                 raw = read_slot(bres.data, slot, meta.record_size)
                 values = decode_record(raw, meta.fields)
@@ -367,9 +364,9 @@ class FileIndexManager:
 
         bump = lambda: self._bump_nodes_visited()
         if meta.index_strategy == "hash_index":
-            idx = HashIndex(meta, self.buffer, self.page_size, on_visit=bump)
+            idx = HashIndex(meta, self.buffer, self.usable_page_size, on_visit=bump)
         elif meta.index_strategy == "bplus_tree":
-            idx = BPlusTree(meta, self.buffer, self.page_size, on_visit=bump)
+            idx = BPlusTree(meta, self.buffer, self.usable_page_size, on_visit=bump)
         else:
             return None
         self._index_cache[meta.name] = idx
@@ -455,3 +452,29 @@ class FileIndexManager:
         if not self.catalog.has(type_name):
             return 0
         return self.buffer.get_page_count(self.catalog.get(type_name).file_id)
+
+    # ====================================================================
+    # Recovery support: rebuild indexes from recovered data
+    # ====================================================================
+
+    def rebuild_indexes(self) -> None:
+        """Rebuild every type's index from its (recovered) data pages.
+
+        Called once at startup, after three-phase recovery. The data pages are
+        recovered exactly by the WAL; the indexes are derived structures, so
+        rather than recover index pages (whose shared node headers don't survive
+        physical Undo of interleaved transactions), we simply rebuild them from
+        the authoritative record data. This guarantees index/data consistency.
+        """
+        for meta in self.catalog.all_types():
+            if meta.index_strategy == "heap_scan" or not meta.index_file_id:
+                continue
+            # Snapshot the records first (heap scan reads the data file, which is
+            # untouched by resetting the index file).
+            records = [(pid, slot, values) for pid, slot, values in self._heap_scan(meta)]
+            self._index_cache.pop(meta.name, None)
+            self.buffer.delete_file(meta.index_file_id)
+            idx = self._get_index(meta)  # fresh object on the empty file
+            idx.create()
+            for pid, slot, values in records:
+                idx.insert(values[meta.pk_index], pid, slot)

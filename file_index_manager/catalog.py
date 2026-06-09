@@ -54,8 +54,12 @@ class Catalog:
         self.types = pickle.loads(data)
 
     def _save(self) -> None:
+        # fsync so a committed `create type` survives a crash. (DDL is not rolled
+        # back by recovery, so an uncommitted type may leak — documented.)
         with open(self.path, "wb") as f:
             pickle.dump(self.types, f)
+            f.flush()
+            os.fsync(f.fileno())
 
     def has(self, name: str) -> bool:
         return name in self.types

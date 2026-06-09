@@ -5,5 +5,6 @@
   "replacement_policy": "LRU",
   "index_strategy": "bplus_tree",
   "checkpoint_interval": 50,
-  "log_buffer_size": 8
+  "log_buffer_size": 8,
+  "data_dir": "data"
 }

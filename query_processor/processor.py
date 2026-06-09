@@ -30,11 +30,17 @@ class QueryProcessor:
         file_idx: FileIndexManager,
         buffer: BufferManager,
         disk: DiskSpaceManager,
+        recovery=None,
     ):
         self.config = config
         self.file_idx = file_idx
         self.buffer = buffer
         self.disk = disk
+        self.recovery = recovery
+
+        # Project 4: name (chosen by the input file, e.g. T1) -> internal XID.
+        # Multiple transactions may be open at once; ops interleave line by line.
+        self.open_txns: dict = {}
 
         self.base_dir: str = config["_base_dir"]
         self.output_path = os.path.join(self.base_dir, "output.txt")
@@ -67,16 +73,14 @@ class QueryProcessor:
             return
 
         head = parts[0]
-        if head == "create" and len(parts) >= 2 and parts[1] == "type":
-            self._do_create_type(line, parts[2:])
-        elif head == "create" and len(parts) >= 2 and parts[1] == "record":
-            self._do_create_record(line, parts[2:])
-        elif head == "delete" and len(parts) >= 2 and parts[1] == "record":
-            self._do_delete_record(line, parts[2:])
-        elif head == "search" and len(parts) >= 2 and parts[1] == "record":
-            self._do_search_record(line, parts[2:])
-        elif head == "range_search":
-            self._do_range_search(line, parts[1:])
+        if head == "tx_begin":
+            self._do_tx_begin(line, parts[1:])
+        elif head == "tx_op":
+            self._do_tx_op(line, parts[1:])
+        elif head == "tx_commit":
+            self._do_tx_commit(line, parts[1:])
+        elif head == "crash":
+            self._do_crash()
         elif head == "explain":
             inner = line[len("explain"):].strip()
             if inner:
@@ -88,77 +92,124 @@ class QueryProcessor:
                 self._do_stats_reset(line)
             else:
                 self._do_stats(line)
+        elif head in ("create", "delete", "search", "range_search"):
+            # A data operation outside any open transaction is invalid (spec §7):
+            # log it as a failure with no effect on the database.
+            self._log(line, "failure")
         else:
             self._log(line, "failure")
 
     # ------------------------------------------------------------------
-    # Handlers
+    # Transaction control (Project 4 §7)
     # ------------------------------------------------------------------
 
-    def _do_create_type(self, line, args):
-        # <name> <num_fields> <pk_order> <field1_name> <field1_type> ...
-        if len(args) < 3:
+    def _do_tx_begin(self, line, args):
+        if len(args) != 1 or self.recovery is None:
             self._log(line, "failure")
             return
+        name = args[0]
+        if name in self.open_txns:
+            self._log(line, "failure")  # already open
+            return
+        self.open_txns[name] = self.recovery.begin_txn()
+        self._log(line, "success")
+
+    def _do_tx_op(self, line, args):
+        # args = [name, <inner command tokens...>]
+        if len(args) < 2 or args[0] not in self.open_txns:
+            self._log(line, "failure")
+            return
+        xid = self.open_txns[args[0]]
+        self.recovery.set_current_xid(xid)
+        try:
+            status = self._run_op(args[1:])
+        finally:
+            self.recovery.set_current_xid(None)
+        self._log(line, status)
+
+    def _do_tx_commit(self, line, args):
+        if len(args) != 1 or args[0] not in self.open_txns:
+            self._log(line, "failure")
+            return
+        xid = self.open_txns.pop(args[0])
+        self.recovery.commit_txn(xid)
+        self._log(line, "success")
+
+    def _do_crash(self):
+        # Simulate power failure: terminate mid-flight. No flush, no destructors,
+        # no cleanup (spec §7 — must be os._exit, not sys.exit / exception).
+        os._exit(1)
+
+    # ------------------------------------------------------------------
+    # Data operations (only reachable inside a tx_op; logged under its XID)
+    # ------------------------------------------------------------------
+
+    def _run_op(self, parts) -> str:
+        head = parts[0]
+        if head == "create" and len(parts) >= 2 and parts[1] == "type":
+            return self._op_create_type(parts[2:])
+        if head == "create" and len(parts) >= 2 and parts[1] == "record":
+            return self._op_create_record(parts[2:])
+        if head == "delete" and len(parts) >= 2 and parts[1] == "record":
+            return self._op_delete_record(parts[2:])
+        if head == "search" and len(parts) >= 2 and parts[1] == "record":
+            return self._op_search_record(parts[2:])
+        if head == "range_search":
+            return self._op_range_search(parts[1:])
+        return "failure"
+
+    def _op_create_type(self, args) -> str:
+        # <name> <num_fields> <pk_order> <field1_name> <field1_type> ...
+        if len(args) < 3:
+            return "failure"
         type_name = args[0]
         try:
             num_fields = int(args[1])
             pk_order = int(args[2])
         except ValueError:
-            self._log(line, "failure")
-            return
+            return "failure"
         field_args = args[3:]
         if len(field_args) != 2 * num_fields:
-            self._log(line, "failure")
-            return
+            return "failure"
         fields = [(field_args[2 * i], field_args[2 * i + 1]) for i in range(num_fields)]
-        pk_index = pk_order - 1  # spec: 1-indexed
-        res = self.file_idx.create_type(type_name, fields, pk_index)
-        self._log(line, "success" if res.success else "failure")
+        res = self.file_idx.create_type(type_name, fields, pk_order - 1)
+        return "success" if res.success else "failure"
 
-    def _do_create_record(self, line, args):
+    def _op_create_record(self, args) -> str:
         if len(args) < 2:
-            self._log(line, "failure")
-            return
+            return "failure"
         res = self.file_idx.insert_record(args[0], args[1:])
-        self._log(line, "success" if res.success else "failure")
+        return "success" if res.success else "failure"
 
-    def _do_delete_record(self, line, args):
+    def _op_delete_record(self, args) -> str:
         if len(args) != 2:
-            self._log(line, "failure")
-            return
+            return "failure"
         res = self.file_idx.delete_record(args[0], args[1])
-        self._log(line, "success" if res.success else "failure")
+        return "success" if res.success else "failure"
 
-    def _do_search_record(self, line, args):
+    def _op_search_record(self, args) -> str:
         if len(args) != 2:
-            self._log(line, "failure")
-            return
+            return "failure"
         res = self.file_idx.search_record(args[0], args[1])
         if res.status == "success" and res.records:
             self._write_output(self._format_record(res.records[0]))
-            self._log(line, "success")
-        else:
-            # nothing to output.txt, log as failure
-            self._log(line, "failure")
+            return "success"
+        return "failure"  # no match → nothing on output.txt
 
-    def _do_range_search(self, line, args):
+    def _op_range_search(self, args) -> str:
         if len(args) != 4:
-            self._log(line, "failure")
-            return
+            return "failure"
         type_name, field_name, low_s, high_s = args
         try:
             low, high = int(low_s), int(high_s)
         except ValueError:
-            self._log(line, "failure")
-            return
+            return "failure"
         res = self.file_idx.range_search(type_name, field_name, low, high)
-        if res.status == "success":
-            for rec in res.records:
-                self._write_output(self._format_record(rec))
-            self._log(line, "success")
-        else:
-            self._log(line, "failure")
+        if res.status != "success":
+            return "failure"
+        for rec in res.records:
+            self._write_output(self._format_record(rec))
+        return "success"
 
     def _do_stats(self, line):
         d_reads = self.disk.reads

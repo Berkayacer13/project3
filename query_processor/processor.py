@@ -132,6 +132,9 @@ class QueryProcessor:
             self._log(line, "failure")
             return
         xid = self.open_txns.pop(args[0])
+        # Persist any types this transaction created BEFORE the commit record is
+        # written, so committed DDL is durable no later than the commit itself.
+        self.file_idx.notify_commit(xid)
         self.recovery.commit_txn(xid)
         self._log(line, "success")
 

@@ -77,6 +77,11 @@ class FileIndexManager:
         # Lazy-loaded index objects, one per indexed type.
         self._index_cache: dict = {}
 
+        # Types created by each still-open transaction (xid -> [type_name]).
+        # Persisted to the catalog only when that transaction commits, so an
+        # uncommitted `create type` leaves no trace after recovery (spec §1).
+        self._pending_types: dict = {}
+
     # ====================================================================
     # DDL
     # ====================================================================
@@ -117,15 +122,27 @@ class FileIndexManager:
             )
 
         file_id = f"{type_name}.dat"
+        index_file_id = (
+            f"{type_name}.idx" if self.index_strategy != "heap_scan" else ""
+        )
+
+        # A prior, uncommitted `create type` of this same name may have left its
+        # data/index files on disk: the catalog rolled the type back, but the raw
+        # files are not WAL-managed. Since the type is absent from the catalog
+        # (checked above), those files are stale leftovers — drop them so this
+        # fresh create starts from a clean slate instead of failing on a
+        # pre-existing file.
+        if self.buffer.file_exists(file_id):
+            self.buffer.delete_file(file_id)
+        if index_file_id and self.buffer.file_exists(index_file_id):
+            self.buffer.delete_file(index_file_id)
+
         if not self.buffer.create_file(file_id):
             return OpResult(
                 success=False,
                 message=f"could not create file {file_id} (already on disk?)",
             )
 
-        index_file_id = (
-            f"{type_name}.idx" if self.index_strategy != "heap_scan" else ""
-        )
         meta = TypeMeta(
             name=type_name,
             fields=list(fields),
@@ -137,11 +154,34 @@ class FileIndexManager:
             index_file_id=index_file_id,
         )
         self.catalog.add(meta)
+        self._track_pending_type(type_name)
         # Build the index file (empty buckets / empty root) for indexed types.
         idx = self._get_index(meta)
         if idx is not None:
             idx.create()
         return OpResult(success=True, message=f"type {type_name} created")
+
+    def _track_pending_type(self, type_name: str) -> None:
+        """Attribute a freshly-created type to its open transaction so that the
+        catalog is persisted only when that transaction commits."""
+        rm = getattr(self.buffer, "recovery", None)
+        xid = rm.current_xid if rm is not None else None
+        if xid is None:
+            # No active transaction (create type only reaches here via tx_op, so
+            # this is a defensive fallback): persist immediately so it isn't lost.
+            self.catalog.commit([type_name])
+        else:
+            self._pending_types.setdefault(xid, []).append(type_name)
+
+    def notify_commit(self, xid) -> None:
+        """A transaction committed: make the types it created durable.
+
+        Called by the QueryProcessor as part of `tx_commit`. Types created by a
+        transaction that never commits are never written to disk, so they leave
+        no trace after a crash (spec §1)."""
+        names = self._pending_types.pop(xid, None)
+        if names:
+            self.catalog.commit(names)
 
     # ====================================================================
     # DML

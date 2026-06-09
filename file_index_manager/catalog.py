@@ -3,6 +3,15 @@
 Stored as a pickled dict { type_name: TypeMeta } in `catalog.dat` next to
 archive.py. The catalog is a metadata file, not a paged relation, so it is
 read/written directly rather than through the buffer.
+
+Transactional DDL (spec §1: "uncommitted ones leave no trace"). `create type`
+runs inside a transaction, so a type is held in memory the moment it is added
+(the rest of the creating transaction must see it) but is only written to
+`catalog.dat` once that transaction commits. A type whose transaction never
+commits — because of a `crash` or a clean shutdown with the transaction still
+open — is therefore absent from disk on the next restart, leaving no trace.
+This mirrors how record data is rolled back by WAL Undo; here the catalog is
+the durable record and commit is the only thing that makes a type durable.
 """
 
 import os
@@ -41,7 +50,8 @@ class Catalog:
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
         self.path = os.path.join(base_dir, CATALOG_FILE)
-        self.types: dict = {}
+        self.types: dict = {}        # live view: committed + pending-this-run
+        self._pending: set = set()   # type names created by not-yet-committed txns
         self._load()
 
     def _load(self) -> None:
@@ -51,13 +61,19 @@ class Catalog:
             data = f.read()
         if not data:
             return
+        # Only committed types were ever written, so everything we load is
+        # durable; nothing starts out pending.
         self.types = pickle.loads(data)
 
-    def _save(self) -> None:
-        # fsync so a committed `create type` survives a crash. (DDL is not rolled
-        # back by recovery, so an uncommitted type may leak — documented.)
+    def _persist(self) -> None:
+        """Write only committed (non-pending) types to disk + fsync.
+
+        Pending types stay in memory so the rest of their creating transaction
+        can use them, but they never reach catalog.dat — a crash before commit
+        therefore leaves no trace of them (spec §1)."""
+        durable = {n: m for n, m in self.types.items() if n not in self._pending}
         with open(self.path, "wb") as f:
-            pickle.dump(self.types, f)
+            pickle.dump(durable, f)
             f.flush()
             os.fsync(f.fileno())
 
@@ -68,12 +84,17 @@ class Catalog:
         return self.types[name]
 
     def add(self, meta: TypeMeta) -> None:
-        self.types[meta.name] = meta
-        self._save()
+        """Register a type in memory under the (open) creating transaction.
 
-    def update(self, meta: TypeMeta) -> None:
+        Not durable until commit() is called for that transaction."""
         self.types[meta.name] = meta
-        self._save()
+        self._pending.add(meta.name)
+
+    def commit(self, names) -> None:
+        """The creating transaction committed: its types become durable."""
+        for n in names:
+            self._pending.discard(n)
+        self._persist()
 
     def all_types(self):
         return list(self.types.values())
